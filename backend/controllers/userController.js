@@ -1,0 +1,184 @@
+import validator from 'validator'
+import bcrypt from 'bcrypt'
+import userModel from "../models/userModel.js"
+import jwt from 'jsonwebtoken'
+import cloudinary from 'cloudinary'
+import appointmentModel from '../models/appointmentModel.js' // Import appointment model
+import doctorModel from '../models/doctorModel.js' // Import doctor model
+
+// API to register user
+const registerUser = async (req, res) => {
+    try {
+        const { name, email, password } = req.body
+        if (!name || !password || !email) {
+            return res.json({ success: false, message: "Missing Details" })
+        }
+        if (!validator.isEmail(email)) {
+            return res.json({ success: false, message: "enter a valid email" })
+        }
+        if (password.length < 8) {
+            return res.json({ success: false, message: "enter a strong password" })
+        }
+
+        // hashing user password
+        const salt = await bcrypt.genSalt(10)
+        const hashedPassword = await bcrypt.hash(password, salt)
+
+        const userData = {
+            name,
+            email,
+            password: hashedPassword
+        }
+
+        const newUser = new userModel(userData)
+        const user = await newUser.save()
+
+        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET)
+        res.json({ success: true, token })
+
+    } catch (error) {
+        console.log(error)
+        res.json({ success: false, message: error.message })
+    }
+}
+
+// API for user Login
+
+const loginUser = async (req, res) => {
+    try {
+        const { email, password } = req.body
+        const user = await userModel.findOne({ email })
+        if (!user) {
+            return res.json({ success: false, message: 'User does not exist' })
+        }
+        const isMatch = await bcrypt.compare(password, user.password)
+        if (isMatch) {
+            const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET)
+            res.json({ success: true, token })
+        } else {
+            res.json({ success: false, message: "Invalid credentials" })
+        }
+    } catch (error) {
+        console.log(error)
+        res.json({ success: false, message: error.message })
+    }
+}
+
+const getProfile = async(req,res) => {
+    try {
+
+        const {userId} = req.body
+        const userData = await userModel.findById(userId).select('-password')
+        
+        res.json({success: true, userData})
+    } catch (error) {
+        console.log(error)
+        res.json({ success: false, message: error.message })
+    }
+}
+
+const updateProfile = async(req, res) => {
+    try {
+        const {userId, name, phone, address, dob, gender} = req.body
+        const imageFile = req.file
+
+        if (!name || !phone || !dob || !gender) {
+            return res.json({ success: false, message: "Data Missing" })
+        }
+        
+        
+        await userModel.findByIdAndUpdate(userId, {name, phone, address: JSON.parse(address),dob,gender})
+
+        if(imageFile) {
+            //upload image to cloudinary
+            const imageUpload = await cloudinary.uploader.upload(imageFile.path,{resource_type:'image'})
+            const imageURL = imageUpload.secure_url
+
+            await userModel.findByIdAndUpdate(userId, {image:imageURL})
+        }
+        res.json({success: true, message:"Profile Updated"})
+
+    } catch (error) {
+        console.log(error)
+        res.json({ success: false, message: error.message })
+    }
+}
+
+// API to book an appointment
+const bookAppointment = async (req, res) => {
+    try {
+        const { userId, doctorId, date, time, consultationFee } = req.body;
+
+        if (!userId || !doctorId || !date || !time || !consultationFee) {
+            return res.json({ success: false, message: "Missing Details" });
+        }
+
+        const doctor = await doctorModel.findById(doctorId);
+        if (!doctor) {
+            return res.json({ success: false, message: "Doctor not found" });
+        }
+
+        // Check if the slot is already full
+        const existingAppointments = await appointmentModel.find({ doctorId, date, time });
+        if (existingAppointments.length >= 5) {
+            return res.json({ success: false, message: "This slot is full. Please choose another time." });
+        }
+
+        const newAppointment = new appointmentModel({
+            userId,
+            doctorId,
+            doctorName: doctor.name,
+            doctorSpeciality: doctor.speciality,
+            doctorImage: doctor.image, // Save doctor's image
+            date,
+            time,
+            consultationFee,
+            status: 'pending'
+        });
+
+        await newAppointment.save();
+        res.json({ success: true, message: "Appointment booked successfully" });
+
+    } catch (error) {
+        console.log(error);
+        res.json({ success: false, message: error.message });
+    }
+}
+
+// API to list user's appointments
+const listAppointments = async (req, res) => {
+    try {
+        const { userId } = req.body;
+        const appointments = await appointmentModel.find({ userId });
+        res.json({ success: true, appointments });
+    } catch (error) {
+        console.log(error);
+        res.json({ success: false, message: error.message });
+    }
+}
+
+// API to cancel an appointment
+const cancelAppointment = async (req, res) => {
+    try {
+        const { appointmentId } = req.body;
+
+        const appointment = await appointmentModel.findById(appointmentId);
+        if (!appointment) {
+            return res.json({ success: false, message: "Appointment not found" });
+        }
+
+        // Only allow cancelling pending or approved appointments
+        if (appointment.status === 'completed' || appointment.status === 'cancelled') {
+            return res.json({ success: false, message: "Cannot cancel a completed or already cancelled appointment" });
+        }
+
+        await appointmentModel.findByIdAndUpdate(appointmentId, { status: 'cancelled' });
+        res.json({ success: true, message: "Appointment cancelled successfully" });
+
+    } catch (error) {
+        console.log(error);
+        res.json({ success: false, message: error.message });
+    }
+}
+
+export { registerUser, loginUser , getProfile, updateProfile, bookAppointment, listAppointments, cancelAppointment }
